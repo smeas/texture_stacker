@@ -1,4 +1,11 @@
-use std::{error::Error, fs::File, io::BufWriter, time::Instant};
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unreachable_code)]
+
+use std::{
+    collections::HashMap, error::Error, ffi::OsStr, fs::File, io::BufWriter, path::Path,
+    time::Instant,
+};
 
 use png::{BitDepth, ColorType};
 
@@ -154,10 +161,6 @@ fn pixel_to_bytes(pixel: Pixel, format: &ImageFormat, slice: &mut [u8]) {
     }
 }
 
-
-
-
-
 fn create_mask_from_alpha_channel(image: &RawImage) -> Vec<bool> {
     let format = &image.format;
 
@@ -178,82 +181,24 @@ fn create_mask_from_alpha_channel(image: &RawImage) -> Vec<bool> {
     pixel_mask
 }
 
-
-fn apply_image(
-    src: &[u8],
-    dst: &mut [u8],
-    src_format: &ImageFormat,
-    dst_format: &ImageFormat,
-    tex_type: TextureType,
-) {
-    let src_stride = calc_pixel_stride(src_format);
-    let dst_stride = calc_pixel_stride(dst_format);
-
-    dbg!(src_stride);
-    dbg!(dst_stride);
-
-    assert_eq!(src.len() / src_stride, dst.len() / dst_stride);
-    assert_eq!(tex_type, TextureType::Color);
-
-    for i in 0..(dst.len() / dst_stride) {
-        let src_pixel = bytes_to_pixel(&src[i * src_stride..], src_format);
-        let dst_pixel = bytes_to_pixel(&dst[i * dst_stride..], dst_format);
-
-        if dst_pixel == Pixel(0, 0, 0, 255) || dst_pixel == Pixel(0, 0, 0, 0) {
-            pixel_to_bytes(src_pixel, dst_format, &mut dst[i * dst_stride..]);
-        }
-    }
-}
-
-fn stack_images(input_files: &[&str], output_file: &str, tex_type: TextureType) -> Result<()> {
-    assert!(input_files.len() >= 1);
-
-    let mut buffer;
-    let buffer_format;
-
-    // Load the first image into the buffer.
-    {
-        let image = read_image_from_file(input_files[0])?;
-
-        assert!(image.format.bit_depth == BitDepth::Eight);
-        assert!(
-            image.format.color_type == ColorType::Rgb || image.format.color_type == ColorType::Rgba
-        );
-
-        buffer = image.data;
-        buffer_format = image.format;
+fn combine_texture_sets(
+    input_sets: &[InputTextureSet],
+    suffixes: &[&str],
+    output_prefix: &str,
+) -> Result<()> {
+    // Assumptions.
+    for texture_set in input_sets {
+        assert!(texture_set.textures.len() > 0);
+        assert!(texture_set.textures[0].is_some());
     }
 
-    for infile in input_files {
-        let image = read_image_from_file(infile)?;
-
-        apply_image(
-            &image.data,
-            &mut buffer,
-            &image.format,
-            &buffer_format,
-            tex_type,
-        );
-    }
-
-    let output_image = RawImage {
-        data: buffer,
-        format: buffer_format,
-    };
-    write_image_to_file(output_file, &output_image)?;
-
-    Ok(())
-}
-
-
-fn combine_texture_sets(input_sets: &[&[&str]], output_files: &[&str]) -> Result<()> {
     // Pixel mask for each texture set.
     let mut set_masks = vec![];
     let mut working_res = (0u32, 0u32);
 
     // Compute masks for each texture set.
     for input_set in input_sets {
-        let image = read_image_from_file(input_set[0])?;
+        let image = read_image_from_file(input_set.textures[0].as_ref().unwrap())?;
 
         assert_eq!(image.format.color_type, ColorType::Rgba); // need alpha channel for mask
         assert!(image.format.width > 0 && image.format.height > 0);
@@ -281,41 +226,67 @@ fn combine_texture_sets(input_sets: &[&[&str]], output_files: &[&str]) -> Result
         let mut buffer = vec![0u8; num_pixels * stride];
 
         for i in 0..num_pixels {
-            let pixel = if mask[i] { Pixel(255, 255, 255, 255) } else { Pixel(0, 0, 0, 255) };
+            let pixel = if mask[i] {
+                Pixel(255, 255, 255, 255)
+            } else {
+                Pixel(0, 0, 0, 255)
+            };
             pixel_to_bytes(pixel, &format, &mut buffer[i * stride..]);
         }
 
-        write_image_to_file(&format!("TEST2/Result/mask{}.png", i), &RawImage {data: buffer, format})?;
+        write_image_to_file(
+            &format!("TEST2/Result/mask{}.png", i),
+            &RawImage {
+                data: buffer,
+                format,
+            },
+        )?;
     }
 
     // Combine all the image sets into the output files.
-    for (texture_index, output_file) in output_files.iter().enumerate() {
+    for (texture_index, suffix) in suffixes.iter().enumerate() {
         let mut output_image: Option<RawImage> = None;
+        let mut first = true;
 
         for (set_index, input_set) in input_sets.iter().enumerate() {
-            let image = read_image_from_file(input_set[texture_index])?;
+            // Grab the texture filename if it exists.
+            let texture_filename;
+            if let Some(filename) = &input_set.textures[texture_index] {
+                texture_filename = filename;
+            } else {
+                continue;
+            }
+
+            let image = read_image_from_file(texture_filename)?;
             let format = &image.format;
 
             if let Some(raw_output_image) = &output_image {
                 assert_eq!(&raw_output_image.format, format);
             } else {
-                let buffer_size = format.width as usize * format.height as usize * calc_pixel_stride(format);
+                let buffer_size =
+                    format.width as usize * format.height as usize * calc_pixel_stride(format);
+
                 output_image = Some(RawImage {
                     data: vec![0; buffer_size],
                     format: *format,
                 });
             }
 
-            if set_index == 0 {
+            if first {
                 // For the first image in the set we just copy the image without masking to get a nice background color for the output image.
                 copy_image(&image, output_image.as_mut().unwrap());
+                first = false;
             } else {
                 let mask = &set_masks[set_index];
                 copy_image_masked(&image, output_image.as_mut().unwrap(), &mask);
             }
         }
 
-        write_image_to_file(output_file, &output_image.expect("TODO: no image"))?;
+        if let Some(image) = &output_image {
+            let output_file = format!("{}{}.png", output_prefix, suffix);
+            write_image_to_file(&output_file, &image)?;
+            println!("{}", output_file);
+        }
     }
 
     Ok(())
@@ -333,8 +304,15 @@ fn copy_image_masked(source_image: &RawImage, dest_image: &mut RawImage, mask: &
 
     for i in 0..num_pixels {
         if mask[i] {
-            let pixel = bytes_to_pixel(&source_image.data[i * source_stride..], &source_image.format);
-            pixel_to_bytes(pixel, &dest_image.format, &mut dest_image.data[i * dest_stride..]);
+            let pixel = bytes_to_pixel(
+                &source_image.data[i * source_stride..],
+                &source_image.format,
+            );
+            pixel_to_bytes(
+                pixel,
+                &dest_image.format,
+                &mut dest_image.data[i * dest_stride..],
+            );
         }
     }
 }
@@ -354,37 +332,106 @@ fn copy_image(source_image: &RawImage, dest_image: &mut RawImage) {
         let dest_stride = dest_image.data.len() / num_pixels;
 
         for i in 0..num_pixels {
-            let pixel = bytes_to_pixel(&source_image.data[i * source_stride..], &source_image.format);
-            pixel_to_bytes(pixel, &dest_image.format, &mut dest_image.data[i * dest_stride..]);
+            let pixel = bytes_to_pixel(
+                &source_image.data[i * source_stride..],
+                &source_image.format,
+            );
+            pixel_to_bytes(
+                pixel,
+                &dest_image.format,
+                &mut dest_image.data[i * dest_stride..],
+            );
         }
     }
 }
 
+#[derive(Debug)]
+struct InputTextureSet {
+    name: String,
+    textures: Vec<Option<String>>,
+}
+
+fn suffix_from_filename(filename: &str) -> Option<&str> {
+    let path: &Path = filename.as_ref();
+
+    if let Some(stem) = path.file_stem() {
+        let stem = stem.to_str().unwrap();
+        if let Some(pos) = stem.rfind('_') {
+            return Some(&stem[pos..]);
+        }
+    }
+
+    None
+}
+
+fn collect_and_group_files_by_name<P: AsRef<Path>>(
+    directory: &P,
+) -> Result<HashMap<String, Vec<String>>> {
+    let directory = directory.as_ref();
+    assert!(directory.is_dir()); // TODO
+
+    let mut map = HashMap::<String, Vec<String>>::new();
+
+    for entry in directory.read_dir()? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension() != Some("png".as_ref()) {
+            continue;
+        }
+
+        if let Some(stem) = path.file_stem() {
+            let stem = stem.to_string_lossy();
+
+            if let Some(pos) = stem.rfind('_') {
+                let pre = &stem[..pos];
+
+                match map.get_mut(pre) {
+                    Some(vec) => {
+                        vec.push(path.to_string_lossy().to_string());
+                    }
+                    None => {
+                        let mut vec = Vec::new();
+                        vec.push(path.to_string_lossy().to_string());
+                        map.insert(pre.to_string(), vec);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(map)
+}
+
+fn gather_texture_sets_from_directory<P: AsRef<Path>>(
+    path: &P,
+    suffixes: &[&str],
+) -> Result<Vec<InputTextureSet>> {
+    let files = collect_and_group_files_by_name(path)?;
+    let mut output: Vec<InputTextureSet> = Vec::new();
+
+    for (name, textures) in &files {
+        let mut texture_set = InputTextureSet {
+            name: name.clone(),
+            textures: vec![None; suffixes.len()],
+        };
+
+        for (i, suffix) in suffixes.iter().enumerate() {
+            if let Some(file) = textures
+                .iter()
+                .find(|filename| suffix_from_filename(filename) == Some(suffix))
+            {
+                texture_set.textures[i] = Some(file.clone());
+            }
+        }
+
+        output.push(texture_set);
+    }
+
+    Ok(output)
+}
 
 fn main() {
-    println!("Hello, world!");
-
-    // let infile = File::open("TEST/InputFiles/T_CarPlayerBody_D.png").unwrap();
-    // let decoder = png::Decoder::new(infile);
-
-    // let mut reader = decoder.read_info().unwrap();
-    // let mut buf = vec![0; reader.output_buffer_size()];
-
-    // let info = reader.next_frame(&mut buf).unwrap();
-    // dbg!(info.width);
-    // dbg!(info.height);
-    // dbg!(info.bit_depth);
-    // dbg!(info.color_type);
-
-    // let bytes = &buf[..info.buffer_size()];
-    //dbg!(bytes);
-
-    // let image = read_image_from_file("TEST/InputFiles/T_CarPlayerBody_N.png");
-    // dbg!(&image.format);
-    // dbg!(&image.data[0..16]);
-
-    // write_image_to_file("TEST/test.png", &image).unwrap();
-
     let start_time = Instant::now();
 
     // stack_images(&[
@@ -394,77 +441,61 @@ fn main() {
     //     "TEST/InputFiles/T_CarPlayerWings_D.png",
     // ], "TEST/T_CarPlayer_D.png", TextureType::Color).unwrap();
 
-    combine_texture_sets(
-        &[
-            &[
-                "TEST2/T_SM_CarPlayer_v03_CarBody_D.png",
-                "TEST2/T_SM_CarPlayer_v03_CarBody_N.png",
-                "TEST2/T_SM_CarPlayer_v03_CarBody_E.png",
-                "TEST2/T_SM_CarPlayer_v03_CarBody_M.png",
-            ],
-            &[
-                "TEST2/T_SM_CarPlayer_v03_Doors_D.png",
-                "TEST2/T_SM_CarPlayer_v03_Doors_N.png",
-                "TEST2/T_SM_CarPlayer_v03_Doors_E.png",
-                "TEST2/T_SM_CarPlayer_v03_Doors_M.png",
-            ],
-            &[
-                "TEST2/T_SM_CarPlayer_v03_Tires_D.png",
-                "TEST2/T_SM_CarPlayer_v03_Tires_N.png",
-                "TEST2/T_SM_CarPlayer_v03_Tires_E.png",
-                "TEST2/T_SM_CarPlayer_v03_Tires_M.png",
-            ],
-            &[
-                "TEST2/T_SM_CarPlayer_v03_Wings_D.png",
-                "TEST2/T_SM_CarPlayer_v03_Wings_N.png",
-                "TEST2/T_SM_CarPlayer_v03_Wings_E.png",
-                "TEST2/T_SM_CarPlayer_v03_Wings_M.png",
-            ],
-        ],
-        &[
-            "TEST2/Result/T_CarPlayer_D.png",
-            "TEST2/Result/T_CarPlayer_N.png",
-            "TEST2/Result/T_CarPlayer_E.png",
-            "TEST2/Result/T_CarPlayer_M.png",
-        ],
-    ).unwrap();
+    let suffixes = ["_D", "_N", "_E", "_M"];
+    let mut texture_sets = gather_texture_sets_from_directory(&"TEST2/", &suffixes).unwrap();
+
+    // texture_sets.iter().for_each(|set| {
+    //     println!("{:?}", set);
+    // });
+
+    // Remove invalid texture sets from the list.
+    texture_sets.retain(|set| {
+        // Make sure the first texture type is given as this will be used for the mask.
+        let valid = set.textures.len() > 0 && set.textures[0].is_some();
+        if !valid {
+            eprintln!("Unable to compute mask for texture set '{}' because the first texture type '{}' is missing. This texture set will be skipped.", set.name, suffixes[0]);
+        }
+
+        valid
+    });
+
+    combine_texture_sets(&texture_sets, &suffixes, "TEST2/Result/T_CarPlayer").unwrap();
+
+    // combine_texture_sets(
+    //     &[
+    //         &[
+    //             "TEST2/T_SM_CarPlayer_v03_CarBody_D.png",
+    //             "TEST2/T_SM_CarPlayer_v03_CarBody_N.png",
+    //             "TEST2/T_SM_CarPlayer_v03_CarBody_E.png",
+    //             "TEST2/T_SM_CarPlayer_v03_CarBody_M.png",
+    //         ],
+    //         &[
+    //             "TEST2/T_SM_CarPlayer_v03_Doors_D.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Doors_N.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Doors_E.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Doors_M.png",
+    //         ],
+    //         &[
+    //             "TEST2/T_SM_CarPlayer_v03_Tires_D.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Tires_N.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Tires_E.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Tires_M.png",
+    //         ],
+    //         &[
+    //             "TEST2/T_SM_CarPlayer_v03_Wings_D.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Wings_N.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Wings_E.png",
+    //             "TEST2/T_SM_CarPlayer_v03_Wings_M.png",
+    //         ],
+    //     ],
+    //     &[
+    //         "TEST2/Result/T_CarPlayer_D.png",
+    //         "TEST2/Result/T_CarPlayer_N.png",
+    //         "TEST2/Result/T_CarPlayer_E.png",
+    //         "TEST2/Result/T_CarPlayer_M.png",
+    //     ],
+    // )
+    // .unwrap();
 
     println!("Finished in {} s", start_time.elapsed().as_secs_f32());
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        apply_image, read_image_from_file, write_image_to_file, ImageFormat, RawImage, TextureType,
-    };
-
-    #[test]
-    fn asd() {
-        let image = read_image_from_file("TEST/InputFiles/T_CarPlayerBody_D.png").unwrap();
-
-        let mut dst_buffer =
-            vec![0; image.format.width as usize * image.format.height as usize * 4];
-        let dst_format = ImageFormat {
-            width: image.format.width,
-            height: image.format.height,
-            bit_depth: image.format.bit_depth,
-            color_type: png::ColorType::Rgba,
-        };
-
-        apply_image(
-            &image.data,
-            &mut dst_buffer,
-            &image.format,
-            &dst_format,
-            TextureType::Color,
-        );
-
-        //assert_eq!(&image.data, &dst_buffer);
-
-        let dst_image = RawImage {
-            data: dst_buffer,
-            format: dst_format,
-        };
-        write_image_to_file("TEST/result.png", &dst_image).unwrap();
-    }
 }
