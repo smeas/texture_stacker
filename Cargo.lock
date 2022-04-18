@@ -115,7 +115,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "texture_stacker_lib"
+name = "texture_stacker"
 version = "0.1.0"
 dependencies = [
  "png",
