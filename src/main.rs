@@ -1,22 +1,13 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unreachable_code)]
-
 use png::{BitDepth, ColorType};
 use serde::Deserialize;
 use std::{
-    borrow::Borrow,
-    collections::HashMap,
+    collections::BTreeMap,
     env,
     error::Error,
-    ffi::OsStr,
-    fs,
-    fs::File,
-    io::BufWriter,
-    io::{self, Write},
+    fs::{self, File},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     process::exit,
-    str::FromStr,
     time::Instant,
 };
 
@@ -64,6 +55,9 @@ struct Config {
     output_directory: String,
     output_texture_name: String,
 }
+
+#[derive(PartialEq, Eq)]
+struct Pixel(u8, u8, u8, u8);
 
 fn read_image_from_file(file_name: &str) -> Result<RawImage> {
     let infile = File::open(&file_name)?;
@@ -137,9 +131,6 @@ fn calc_pixel_stride(format: &ImageFormat) -> usize {
         _ => panic!(),
     }
 }
-
-#[derive(PartialEq, Eq)]
-struct Pixel(u8, u8, u8, u8);
 
 ///
 /// Interprets a slice of bytes as a pixel in the given image format.
@@ -422,9 +413,7 @@ fn copy_image(source_image: &RawImage, dest_image: &mut RawImage) {
 }
 
 fn suffix_from_filename(filename: &str) -> Option<&str> {
-    let path: &Path = filename.as_ref();
-
-    if let Some(stem) = path.file_stem() {
+    if let Some(stem) = Path::new(filename).file_stem() {
         let stem = stem.to_str().unwrap();
         if let Some(pos) = stem.rfind('_') {
             return Some(&stem[pos..]);
@@ -436,15 +425,17 @@ fn suffix_from_filename(filename: &str) -> Option<&str> {
 
 fn collect_and_group_files_by_name<P: AsRef<Path>>(
     directory: &P,
-) -> Result<HashMap<String, Vec<String>>> {
+) -> Result<BTreeMap<String, Vec<String>>> {
     let directory = directory.as_ref();
     assert!(directory.is_dir()); // TODO
 
-    let mut map = HashMap::<String, Vec<String>>::new();
+    // Here we store a mapping of: texture name -> list of textures with that name.
+    // Using a BTreeMap instead of a HashMap here to have the items be sorted by key. This helps
+    // make sure we get a consistent result when processing the textures later.
+    let mut map = BTreeMap::<String, Vec<String>>::new();
 
-    // TODO: Iterate over files sorted to get a consistent result.
     for entry in directory.read_dir()? {
-        let entry = entry?;
+        let entry = entry?; // TODO
         let path = entry.path();
 
         if path.extension() != Some("png".as_ref()) {
@@ -459,12 +450,12 @@ fn collect_and_group_files_by_name<P: AsRef<Path>>(
 
                 match map.get_mut(pre) {
                     Some(vec) => {
-                        vec.push(path.to_string_lossy().to_string());
+                        vec.push(path.to_string_lossy().into_owned());
                     }
                     None => {
                         let mut vec = Vec::new();
                         vec.push(path.to_string_lossy().to_string());
-                        map.insert(pre.to_string(), vec);
+                        map.insert(pre.to_owned(), vec);
                     }
                 }
             }
@@ -507,7 +498,7 @@ where
 }
 
 fn get_config() -> Result<ConfigFile> {
-    let path: &Path = "config.toml".as_ref();
+    let path = Path::new("config.toml");
     if path.is_file() {
         let raw = fs::read_to_string(path)?;
         Ok(toml::from_str(&raw)?)
@@ -522,10 +513,6 @@ fn prompt_for_string(prompt: &str) -> Result<String> {
     let mut buf = String::new();
     io::stdin().read_line(&mut buf)?;
     Ok(buf.trim().to_owned())
-}
-
-fn is_directory(path: &impl AsRef<Path>) -> bool {
-    path.as_ref().is_dir()
 }
 
 fn main() {
@@ -546,7 +533,7 @@ fn main() {
         }
     });
 
-    if !is_directory(&input_directory) {
+    if !Path::new(&input_directory).is_dir() {
         eprintln!("[ERROR] The specified input directory is not valid.");
         exit(1);
     }
@@ -555,17 +542,19 @@ fn main() {
     // Can be a relative path, so has to be unpacked appropriately.
     let mut output_texture_name = config_file
         .output_texture_name
-        .unwrap_or_else(|| prompt_for_string("Output texture name (relative to input directory)? ").unwrap())
+        .unwrap_or_else(|| {
+            prompt_for_string("Output texture name (relative to input directory)? ").unwrap()
+        })
         // Make sure it does not start with a slash, as that could cause paths to be overwritten by an absolute later on.
-        .trim_start_matches(&['/', '\\'])
+        .trim_matches(&['/', '\\'] as &[char])
         .to_owned();
 
     let output_directory = {
         let mut output_directory_path = PathBuf::new();
         output_directory_path.push(&input_directory);
 
-        let empty_path: &Path = "".as_ref();
-        let output_texture_path: &Path = output_texture_name.as_ref();
+        let empty_path = Path::new("");
+        let output_texture_path = Path::new(&output_texture_name);
         let parent_dir = output_texture_path.parent().unwrap_or(empty_path);
         if parent_dir != empty_path {
             output_directory_path.push(&parent_dir);
