@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 png = "0.17.5"
+serde = { version = "1.0.136", features = ["derive"] }
+toml = "0.5.9"

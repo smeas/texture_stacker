@@ -1,0 +1,19 @@
+# The suffixes of the different texture types to process. The first one is expected to
+# have an alpha channel to be used as a mask.
+suffixes = [
+	"_D",
+	"_N",
+	"_E",
+	"_M",
+]
+
+# Should the alpha channel of the first texture type be kept?
+keep_mask_alpha = false
+
+#
+# Options for debugging
+#
+
+input_directory = "TEST2/"
+output_texture_name = "Result/T_CarPlayer"
+#output_masks = true

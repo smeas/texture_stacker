@@ -2,19 +2,25 @@
 #![allow(unused_imports)]
 #![allow(unreachable_code)]
 
+use png::{BitDepth, ColorType};
+use serde::Deserialize;
 use std::{
-    collections::HashMap, error::Error, ffi::OsStr, fs::File, io::BufWriter, path::Path,
+    borrow::Borrow,
+    collections::HashMap,
+    env,
+    error::Error,
+    ffi::OsStr,
+    fs,
+    fs::File,
+    io::BufWriter,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::exit,
+    str::FromStr,
     time::Instant,
 };
 
-use png::{BitDepth, ColorType};
-
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum TextureType {
-    Color,
-    NormalMap,
-    //ChannelPacked,
-}
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 struct RawImage {
     data: Vec<u8>,
@@ -29,10 +35,35 @@ struct ImageFormat {
     bit_depth: BitDepth,
 }
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+#[derive(Debug)]
+struct InputTextureSet {
+    name: String,
+    textures: Vec<Option<String>>,
+}
 
-// enum ProcessingError {
-// }
+#[derive(Debug, Deserialize, Default)]
+struct ConfigFile {
+    #[serde(default)]
+    keep_mask_alpha: bool,
+
+    #[serde(default)]
+    suffixes: Vec<String>,
+
+    #[serde(default)]
+    output_masks: bool,
+
+    input_directory: Option<String>,
+    output_texture_name: Option<String>,
+}
+
+#[derive(Debug)]
+struct Config {
+    keep_mask_alpha: bool,
+    suffixes: Vec<String>,
+    output_masks: bool,
+    output_directory: String,
+    output_texture_name: String,
+}
 
 fn read_image_from_file(file_name: &str) -> Result<RawImage> {
     let infile = File::open(&file_name)?;
@@ -181,11 +212,7 @@ fn create_mask_from_alpha_channel(image: &RawImage) -> Vec<bool> {
     pixel_mask
 }
 
-fn combine_texture_sets(
-    input_sets: &[InputTextureSet],
-    suffixes: &[&str],
-    output_prefix: &str,
-) -> Result<()> {
+fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> Result<()> {
     // Assumptions.
     for texture_set in input_sets {
         assert!(texture_set.textures.len() > 0);
@@ -213,45 +240,54 @@ fn combine_texture_sets(
         set_masks.push(mask);
     }
 
-    // Write masks to files for debugging.
-    for (i, mask) in set_masks.iter().enumerate() {
-        let num_pixels = mask.len();
-        let format = ImageFormat {
-            width: working_res.0,
-            height: working_res.1,
-            bit_depth: BitDepth::Eight,
-            color_type: ColorType::Rgba,
-        };
-        let stride = calc_pixel_stride(&format);
-        let mut buffer = vec![0u8; num_pixels * stride];
-
-        for i in 0..num_pixels {
-            let pixel = if mask[i] {
-                Pixel(255, 255, 255, 255)
-            } else {
-                Pixel(0, 0, 0, 255)
+    if config.output_masks {
+        // Write masks to files for debugging.
+        for (i, mask) in set_masks.iter().enumerate() {
+            let num_pixels = mask.len();
+            let format = ImageFormat {
+                width: working_res.0,
+                height: working_res.1,
+                bit_depth: BitDepth::Eight,
+                color_type: ColorType::Rgba,
             };
-            pixel_to_bytes(pixel, &format, &mut buffer[i * stride..]);
-        }
+            let stride = calc_pixel_stride(&format);
+            let mut buffer = vec![0u8; num_pixels * stride];
 
-        write_image_to_file(
-            &format!("TEST2/Result/mask{}.png", i),
-            &RawImage {
-                data: buffer,
-                format,
-            },
-        )?;
+            for i in 0..num_pixels {
+                let pixel = if mask[i] {
+                    Pixel(255, 255, 255, 255)
+                } else {
+                    Pixel(0, 0, 0, 255)
+                };
+                pixel_to_bytes(pixel, &format, &mut buffer[i * stride..]);
+            }
+
+            let filename = format!("{}/mask{}.png", config.output_directory, i);
+            write_image_to_file(
+                &filename,
+                &RawImage {
+                    data: buffer,
+                    format,
+                },
+            )
+            .unwrap_or_else(|err| {
+                eprintln!(
+                    "[ERROR] Failed to write mask to file '{}': {:?}",
+                    filename, err
+                )
+            });
+        }
     }
 
     // Combine all the image sets into the output files.
-    for (texture_index, suffix) in suffixes.iter().enumerate() {
+    for (suffix_index, suffix) in config.suffixes.iter().enumerate() {
         let mut output_image: Option<RawImage> = None;
         let mut first = true;
 
         for (set_index, input_set) in input_sets.iter().enumerate() {
             // Grab the texture filename if it exists.
             let texture_filename;
-            if let Some(filename) = &input_set.textures[texture_index] {
+            if let Some(filename) = &input_set.textures[suffix_index] {
                 texture_filename = filename;
             } else {
                 continue;
@@ -259,16 +295,50 @@ fn combine_texture_sets(
 
             let image = read_image_from_file(texture_filename)?;
             let format = &image.format;
+            let is_mask_source_image = suffix_index == 0;
+            //const KEEP_MASK_SOURCE_ALPHA: bool = false;
 
             if let Some(raw_output_image) = &output_image {
-                assert_eq!(&raw_output_image.format, format);
+                // Output image has already been created. Validate the current image's format
+                // against the output image's one.
+
+                let output_format = &raw_output_image.format;
+
+                assert_eq!(output_format.width, format.width);
+                assert_eq!(output_format.height, format.height);
+                assert_eq!(output_format.bit_depth, format.bit_depth);
+
+                if format.color_type != output_format.color_type {
+                    match (format.color_type, output_format.color_type) {
+                        (ColorType::Rgb, ColorType::Rgba) => {} // ok
+                        (ColorType::Rgba, ColorType::Rgb) => {
+                            // alpha is lost
+                            if is_mask_source_image && !config.keep_mask_alpha {
+                                // ok: desired behaviour
+                            } else {
+                                eprintln!("[WARN] Encountered an unexpected alpha channel in {}, it will be discarded as the previous texture(s) did not have one.", texture_filename);
+                            }
+                        }
+                        _ => {
+                            assert!(false, "mismatched color format");
+                        }
+                    }
+                }
             } else {
-                let buffer_size =
-                    format.width as usize * format.height as usize * calc_pixel_stride(format);
+                // Create the output image using the format of the current image.
+
+                let mut output_format = *format;
+                if is_mask_source_image && !config.keep_mask_alpha {
+                    output_format.color_type = ColorType::Rgb;
+                }
+
+                let buffer_size = format.width as usize
+                    * format.height as usize
+                    * calc_pixel_stride(&output_format);
 
                 output_image = Some(RawImage {
                     data: vec![0; buffer_size],
-                    format: *format,
+                    format: output_format,
                 });
             }
 
@@ -283,9 +353,15 @@ fn combine_texture_sets(
         }
 
         if let Some(image) = &output_image {
-            let output_file = format!("{}{}.png", output_prefix, suffix);
-            write_image_to_file(&output_file, &image)?;
+            let mut output_file_path = PathBuf::new();
+            output_file_path.push(&config.output_directory);
+            // NOTE: If output_texture_name contains a '/' or '\', this could lead to unexpected results.
+            output_file_path.push(format!("{}{}", &config.output_texture_name, suffix));
+            output_file_path.set_extension("png");
+
+            let output_file = output_file_path.to_str().unwrap();
             println!("{}", output_file);
+            write_image_to_file(output_file, &image)?;
         }
     }
 
@@ -345,12 +421,6 @@ fn copy_image(source_image: &RawImage, dest_image: &mut RawImage) {
     }
 }
 
-#[derive(Debug)]
-struct InputTextureSet {
-    name: String,
-    textures: Vec<Option<String>>,
-}
-
 fn suffix_from_filename(filename: &str) -> Option<&str> {
     let path: &Path = filename.as_ref();
 
@@ -372,6 +442,7 @@ fn collect_and_group_files_by_name<P: AsRef<Path>>(
 
     let mut map = HashMap::<String, Vec<String>>::new();
 
+    // TODO: Iterate over files sorted to get a consistent result.
     for entry in directory.read_dir()? {
         let entry = entry?;
         let path = entry.path();
@@ -403,10 +474,14 @@ fn collect_and_group_files_by_name<P: AsRef<Path>>(
     Ok(map)
 }
 
-fn gather_texture_sets_from_directory<P: AsRef<Path>>(
+fn gather_texture_sets_from_directory<P, S>(
     path: &P,
-    suffixes: &[&str],
-) -> Result<Vec<InputTextureSet>> {
+    suffixes: &[S],
+) -> Result<Vec<InputTextureSet>>
+where
+    P: AsRef<Path>,
+    S: AsRef<str>,
+{
     let files = collect_and_group_files_by_name(path)?;
     let mut output: Vec<InputTextureSet> = Vec::new();
 
@@ -419,7 +494,7 @@ fn gather_texture_sets_from_directory<P: AsRef<Path>>(
         for (i, suffix) in suffixes.iter().enumerate() {
             if let Some(file) = textures
                 .iter()
-                .find(|filename| suffix_from_filename(filename) == Some(suffix))
+                .find(|filename| suffix_from_filename(filename) == Some(suffix.as_ref()))
             {
                 texture_set.textures[i] = Some(file.clone());
             }
@@ -431,71 +506,113 @@ fn gather_texture_sets_from_directory<P: AsRef<Path>>(
     Ok(output)
 }
 
+fn get_config() -> Result<ConfigFile> {
+    let path: &Path = "config.toml".as_ref();
+    if path.is_file() {
+        let raw = fs::read_to_string(path)?;
+        Ok(toml::from_str(&raw)?)
+    } else {
+        Ok(Default::default())
+    }
+}
+
+fn prompt_for_string(prompt: &str) -> Result<String> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim().to_owned())
+}
+
+fn is_directory(path: &impl AsRef<Path>) -> bool {
+    path.as_ref().is_dir()
+}
+
 fn main() {
-    let start_time = Instant::now();
+    let argv: Vec<String> = env::args().collect();
+    let config_file: ConfigFile = get_config().expect("failed to read config file");
 
-    // stack_images(&[
-    //     "TEST/InputFiles/T_CarPlayerBody_D.png",
-    //     "TEST/InputFiles/T_CarPlayerDoors_D.png",
-    //     "TEST/InputFiles/T_CarPlayerTires_D.png",
-    //     "TEST/InputFiles/T_CarPlayerWings_D.png",
-    // ], "TEST/T_CarPlayer_D.png", TextureType::Color).unwrap();
+    if config_file.suffixes.len() == 0 {
+        eprintln!("[ERROR] No suffixes specified in config.");
+        exit(1);
+    }
 
-    let suffixes = ["_D", "_N", "_E", "_M"];
-    let mut texture_sets = gather_texture_sets_from_directory(&"TEST2/", &suffixes).unwrap();
+    // input_directory = config > args > prompt
+    let input_directory = config_file.input_directory.unwrap_or_else(|| {
+        if argv.len() > 1 {
+            argv[1].clone()
+        } else {
+            prompt_for_string("Input directory? ").unwrap()
+        }
+    });
 
-    // texture_sets.iter().for_each(|set| {
-    //     println!("{:?}", set);
-    // });
+    if !is_directory(&input_directory) {
+        eprintln!("[ERROR] The specified input directory is not valid.");
+        exit(1);
+    }
+
+    // output_texture_name = config > prompt
+    // Can be a relative path, so has to be unpacked appropriately.
+    let mut output_texture_name = config_file
+        .output_texture_name
+        .unwrap_or_else(|| prompt_for_string("Output texture name (relative to input directory)? ").unwrap())
+        // Make sure it does not start with a slash, as that could cause paths to be overwritten by an absolute later on.
+        .trim_start_matches(&['/', '\\'])
+        .to_owned();
+
+    let output_directory = {
+        let mut output_directory_path = PathBuf::new();
+        output_directory_path.push(&input_directory);
+
+        let empty_path: &Path = "".as_ref();
+        let output_texture_path: &Path = output_texture_name.as_ref();
+        let parent_dir = output_texture_path.parent().unwrap_or(empty_path);
+        if parent_dir != empty_path {
+            output_directory_path.push(&parent_dir);
+            fs::create_dir_all(&output_directory_path).unwrap();
+
+            output_texture_name = output_texture_path
+                .file_name()
+                .map(|s| s.to_str().unwrap())
+                .unwrap_or("")
+                .to_owned();
+        }
+
+        output_directory_path.to_str().unwrap().to_owned()
+    };
+
+    let config = Config {
+        suffixes: config_file.suffixes,
+        keep_mask_alpha: config_file.keep_mask_alpha,
+        output_masks: config_file.output_masks,
+        output_directory,
+        output_texture_name,
+    };
+
+    //dbg!(&config);
+
+    let mut texture_sets =
+        gather_texture_sets_from_directory(&input_directory, &config.suffixes).unwrap();
 
     // Remove invalid texture sets from the list.
     texture_sets.retain(|set| {
         // Make sure the first texture type is given as this will be used for the mask.
         let valid = set.textures.len() > 0 && set.textures[0].is_some();
         if !valid {
-            eprintln!("Unable to compute mask for texture set '{}' because the first texture type '{}' is missing. This texture set will be skipped.", set.name, suffixes[0]);
+            eprintln!(
+                "Unable to compute mask for texture set '{}' because the first texture type '{}' is missing. This texture set will be skipped.",
+                set.name,
+                config.suffixes[0]);
         }
 
         valid
     });
 
-    combine_texture_sets(&texture_sets, &suffixes, "TEST2/Result/T_CarPlayer").unwrap();
+    let start_time = Instant::now();
 
-    // combine_texture_sets(
-    //     &[
-    //         &[
-    //             "TEST2/T_SM_CarPlayer_v03_CarBody_D.png",
-    //             "TEST2/T_SM_CarPlayer_v03_CarBody_N.png",
-    //             "TEST2/T_SM_CarPlayer_v03_CarBody_E.png",
-    //             "TEST2/T_SM_CarPlayer_v03_CarBody_M.png",
-    //         ],
-    //         &[
-    //             "TEST2/T_SM_CarPlayer_v03_Doors_D.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Doors_N.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Doors_E.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Doors_M.png",
-    //         ],
-    //         &[
-    //             "TEST2/T_SM_CarPlayer_v03_Tires_D.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Tires_N.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Tires_E.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Tires_M.png",
-    //         ],
-    //         &[
-    //             "TEST2/T_SM_CarPlayer_v03_Wings_D.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Wings_N.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Wings_E.png",
-    //             "TEST2/T_SM_CarPlayer_v03_Wings_M.png",
-    //         ],
-    //     ],
-    //     &[
-    //         "TEST2/Result/T_CarPlayer_D.png",
-    //         "TEST2/Result/T_CarPlayer_N.png",
-    //         "TEST2/Result/T_CarPlayer_E.png",
-    //         "TEST2/Result/T_CarPlayer_M.png",
-    //     ],
-    // )
-    // .unwrap();
+    combine_texture_sets(&texture_sets, &config).unwrap();
 
     println!("Finished in {} s", start_time.elapsed().as_secs_f32());
+
+    prompt_for_string("Press enter to close this window...").unwrap();
 }
