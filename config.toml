@@ -7,13 +7,10 @@ suffixes = [
 	"_M",
 ]
 
-# Should the alpha channel of the first texture type be kept?
-keep_mask_alpha = false
-
 #
 # Options for debugging
 #
 
 #input_directory = "TEST2/"
-#output_texture_name = "Result/T_CarPlayer"
+#output_texture_name = "T_CarPlayer"
 #output_masks = true

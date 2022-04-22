@@ -22,9 +22,6 @@ struct ConfigFile {
     #[serde(default)]
     suffixes: Vec<String>,
 
-    #[serde(default)]
-    keep_mask_alpha: bool,
-
     // Debug options
     #[serde(default)]
     output_masks: bool,
@@ -42,7 +39,6 @@ impl Default for ConfigFile {
                 "_E".to_owned(),
                 "_M".to_owned(),
             ],
-            keep_mask_alpha: false,
             output_masks: false,
             input_directory: None,
             output_texture_name: None,
@@ -109,7 +105,7 @@ fn collect_and_group_files_by_name<P: AsRef<Path>>(
     directory: &P,
 ) -> Result<BTreeMap<String, Vec<String>>> {
     let directory = directory.as_ref();
-    assert!(directory.is_dir()); // TODO
+    assert!(directory.is_dir());
 
     // Here we store a mapping of: texture name -> list of textures with that name.
     // Using a BTreeMap instead of a HashMap here to have the items be sorted by key. This helps
@@ -196,7 +192,10 @@ fn main() {
         if argv.len() > 1 {
             argv[1].clone()
         } else {
-            prompt_for_string("Input directory? ").unwrap()
+            prompt_for_string("Input directory? ")
+                .unwrap()
+                .trim_matches('"')
+                .to_owned()
         }
     });
 
@@ -207,41 +206,39 @@ fn main() {
 
     // output_texture_name = config > prompt
     // Can be a relative path, so has to be unpacked appropriately.
-    let mut output_texture_name = config_file
+    let output_texture_name = config_file
         .output_texture_name
-        .unwrap_or_else(|| {
-            prompt_for_string("Output texture name (relative to input directory)? ").unwrap()
-        })
+        .unwrap_or_else(|| prompt_for_string("Output texture name? ").unwrap())
         // Make sure it does not start with a slash, as that could cause paths to be overwritten by an absolute later on.
         .trim_matches(&['/', '\\'] as &[char])
-        .to_owned();
+        .replace('/', "_")
+        .replace('\\', "_");
 
     let output_directory = {
-        let mut output_directory_path = PathBuf::new();
-        output_directory_path.push(&input_directory);
+        let mut path = PathBuf::new();
+        path.push(&input_directory);
+        path.push("Combined");
 
-        let empty_path = Path::new("");
-        let output_texture_path = Path::new(&output_texture_name);
-        let parent_dir = output_texture_path.parent().unwrap_or(empty_path);
-        if parent_dir != empty_path {
-            output_directory_path.push(&parent_dir);
-            fs::create_dir_all(&output_directory_path).unwrap();
-
-            output_texture_name = output_texture_path
-                .file_name()
-                .map(|s| s.to_str().unwrap())
-                .unwrap_or("")
-                .to_owned();
+        if !path.is_dir() {
+            fs::create_dir(&path).unwrap();
         }
 
-        output_directory_path.to_str().unwrap().to_owned()
+        path.to_str().unwrap().to_owned()
+    };
+
+    let keep_mask_alpha = {
+        let response = prompt_for_string("Keep alpha channel? (Y/n) ").unwrap();
+        match response.trim() {
+            "Y" | "y" => true,
+            _ => false,
+        }
     };
 
     let config = Config {
         suffixes: config_file.suffixes,
-        keep_mask_alpha: config_file.keep_mask_alpha,
+        keep_mask_alpha,
         output_masks: config_file.output_masks,
-        output_directory,
+        output_directory: output_directory.clone(),
         output_texture_name,
     };
 
@@ -267,6 +264,13 @@ fn main() {
     combine_texture_sets(&texture_sets, &config).unwrap();
 
     log_info!("Finished in {} s", start_time.elapsed().as_secs_f32());
+
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(&output_directory)
+            .output();
+    }
 
     prompt_for_string("Press enter to close this window...").unwrap();
 }
