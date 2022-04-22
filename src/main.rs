@@ -1,3 +1,5 @@
+mod interop;
+
 use png::{BitDepth, ColorType};
 use serde::Deserialize;
 use std::{
@@ -7,7 +9,6 @@ use std::{
     fs::{self, File},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    process::exit,
     time::Instant,
 };
 
@@ -32,19 +33,38 @@ struct InputTextureSet {
     textures: Vec<Option<String>>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 struct ConfigFile {
+    #[serde(default)]
+    suffixes: Vec<String>,
+
     #[serde(default)]
     keep_mask_alpha: bool,
 
-    #[serde(default)]
-    suffixes: Vec<String>,
+    // Debug options
 
     #[serde(default)]
     output_masks: bool,
 
     input_directory: Option<String>,
     output_texture_name: Option<String>,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            suffixes: vec![
+                "_D".to_owned(),
+                "_N".to_owned(),
+                "_E".to_owned(),
+                "_M".to_owned(),
+            ],
+            keep_mask_alpha: false,
+            output_masks: false,
+            input_directory: None,
+            output_texture_name: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -58,6 +78,35 @@ struct Config {
 
 #[derive(PartialEq, Eq)]
 struct Pixel(u8, u8, u8, u8);
+
+macro_rules! log_info {
+    ($fmt:literal) => {
+        std::println!($fmt);
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        std::println!($fmt, $($arg)*);
+    };
+}
+
+macro_rules! log_warn {
+    ($fmt:literal) => {
+        std::eprintln!(std::concat!("\x1b[33m[WARN]\x1b[0m ", $fmt));
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        std::eprintln!(std::concat!("\x1b[33m[WARN]\x1b[0m ", $fmt), $($arg)*);
+    };
+}
+
+macro_rules! log_error {
+    ($fmt:literal) => {
+        std::eprintln!(std::concat!("\x1b[31m[ERROR]\x1b[0m ", $fmt));
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        std::eprintln!(std::concat!("\x1b[31m[ERROR]\x1b[0m ", $fmt), $($arg)*);
+    };
+}
+
+
 
 fn read_image_from_file(file_name: &str) -> Result<RawImage> {
     let infile = File::open(&file_name)?;
@@ -503,6 +552,7 @@ fn get_config() -> Result<ConfigFile> {
         let raw = fs::read_to_string(path)?;
         Ok(toml::from_str(&raw)?)
     } else {
+        println!("Config file not found, using defaults.");
         Ok(Default::default())
     }
 }
@@ -515,13 +565,38 @@ fn prompt_for_string(prompt: &str) -> Result<String> {
     Ok(buf.trim().to_owned())
 }
 
+fn ask_to_close_window() {
+    let _ = prompt_for_string("Press enter to close this window...");
+}
+
+fn exit_blocking(code: i32) -> ! {
+    ask_to_close_window();
+    std::process::exit(code);
+}
+
+fn setup_panic_handler() {
+    use std::panic;
+
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        print!("\x1b[31m[CRASH]\x1b[0m ");
+        let _ = io::stdout().flush();
+        default_hook(info);
+        ask_to_close_window();
+    }));
+}
+
+
 fn main() {
+    interop::enable_virtual_terminal_processing();
+    setup_panic_handler();
+
     let argv: Vec<String> = env::args().collect();
     let config_file: ConfigFile = get_config().expect("failed to read config file");
 
     if config_file.suffixes.len() == 0 {
-        eprintln!("[ERROR] No suffixes specified in config.");
-        exit(1);
+        log_error!("No suffixes specified in config.");
+        exit_blocking(1);
     }
 
     // input_directory = config > args > prompt
@@ -534,8 +609,8 @@ fn main() {
     });
 
     if !Path::new(&input_directory).is_dir() {
-        eprintln!("[ERROR] The specified input directory is not valid.");
-        exit(1);
+        log_error!("The specified input directory is not valid.");
+        exit_blocking(1);
     }
 
     // output_texture_name = config > prompt
@@ -588,7 +663,7 @@ fn main() {
         // Make sure the first texture type is given as this will be used for the mask.
         let valid = set.textures.len() > 0 && set.textures[0].is_some();
         if !valid {
-            eprintln!(
+            log_error!(
                 "Unable to compute mask for texture set '{}' because the first texture type '{}' is missing. This texture set will be skipped.",
                 set.name,
                 config.suffixes[0]);
