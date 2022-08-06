@@ -1,15 +1,15 @@
-mod processing;
-mod util;
-mod config;
-
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+
 use crate::config::Config;
 use crate::processing::{combine_texture_sets, InputTextureSet};
 use crate::util::{log_warn, suffix_from_filename};
 
+mod processing;
+mod util;
+mod config;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
