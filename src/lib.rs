@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use crate::config::*;
 use crate::processing::{combine_texture_sets, InputTextureSet, ProcessConfig};
 use crate::util::{log_warn, suffix_from_filename};
 
@@ -12,126 +13,71 @@ mod config;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const COMBINED_DIRECTORY_NAME: &str = "Combined";
+const DEFAULT_OUTPUT_DIRECTORY_NAME: &str = "Combined";
 
-/// Main API
-pub struct TextureStacker {
-    // Options
-    config: Config,
-}
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub keep_mask_alpha: bool,
-    pub output_masks: bool,
-    pub suffixes: Vec<String>,
-    pub output_texture_name: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            keep_mask_alpha: false,
-            output_masks: false,
-            suffixes: vec![
-                "_D".to_owned(),
-                "_N".to_owned(),
-                "_E".to_owned(),
-                "_M".to_owned(),
-            ],
-            output_texture_name: "Output".to_owned(),
-        }
-    }
-}
-
-pub fn load_config_file() -> Result<Config> {
-    let file = config::load_config_file()?;
-    let mut config = Config::default();
-    config.output_masks = file.output_masks;
-    config.suffixes = file.suffixes;
-    if let Some(name) = file.output_texture_name {
-        config.output_texture_name = name;
+pub fn run(config: &Config) -> Result<()> {
+    if config.suffixes.is_empty() {
+        return Err("No suffixes specified.".into());
     }
 
-    Ok(config)
-}
-
-impl TextureStacker {
-    /// Initialize API and load config file.
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    let input_directory = PathBuf::from(&config.input_directory);
+    if !input_directory.is_dir() {
+        return Err("The specified input directory is not valid.".into());
     }
 
-    pub fn load_config_file(&mut self) -> Result<()> {
-        let conf = config::load_config_file()?;
-        self.config.output_masks = conf.output_masks;
-        self.config.suffixes = conf.suffixes;
-        if let Some(name) = conf.output_texture_name {
-            self.config.output_texture_name = name;
+    let output_directory = match &config.output_directory {
+        None => {
+            // Output will be in a subdirectory to the input dir.
+            let mut buf = PathBuf::new();
+            buf.push(&input_directory);
+            buf.push(DEFAULT_OUTPUT_DIRECTORY_NAME);
+            buf
         }
+        Some(path) => PathBuf::from(path),
+    };
 
-        Ok(())
+    if !output_directory.is_dir() {
+        fs::create_dir(&output_directory)?;
     }
 
-    pub fn run_on_directory(&self, input_directory: impl AsRef<Path>) -> Result<()> {
-        let config = &self.config;
-        if config.suffixes.is_empty() {
-            return Err("No suffixes specified.".into());
-        }
+    // Gather input sets from the input directory.
+    let mut inputs =
+        gather_texture_sets_from_directory(&input_directory, &config.suffixes)?;
 
-        let input_directory = input_directory.as_ref();
-        if !input_directory.is_dir() {
-            return Err("The specified input directory is not valid.".into());
-        }
-
-        // Output will be in a subdirectory to the input dir.
-        let mut output_directory = PathBuf::new();
-        output_directory.push(&input_directory);
-        output_directory.push(COMBINED_DIRECTORY_NAME);
-
-        if !output_directory.is_dir() {
-            fs::create_dir(&output_directory)?;
-        }
-
-        // Gather input sets from the input directory.
-        let mut inputs =
-            gather_texture_sets_from_directory(&input_directory, &config.suffixes)?;
-
-        // Remove invalid texture sets from the list.
-        inputs.retain(|set| {
-            // Make sure the first texture type is given as this will be used for the mask.
-            let valid = set.textures.len() > 0 && set.textures[0].is_some();
-            if !valid {
-                log_warn!(
+    // Remove invalid texture sets from the list.
+    inputs.retain(|set| {
+        // Make sure the first texture type is given as this will be used for the mask.
+        let valid = set.textures.len() > 0 && set.textures[0].is_some();
+        if !valid {
+            log_warn!(
                 "Unable to compute mask for texture set '{}' because the first texture type '{}' is missing. This texture set will be skipped.",
                 set.name,
                 &config.suffixes[0]);
-            }
+        }
 
-            valid
-        });
+        valid
+    });
 
-        // Process all input files.
-        let config = ProcessConfig {
-            keep_mask_alpha: config.keep_mask_alpha,
-            output_masks: config.output_masks,
-            suffixes: config.suffixes.clone(),
-            output_texture_name: PathBuf::from(&config.output_texture_name),
-            output_directory: output_directory.clone(),
-        };
+    // Process all input files.
+    let config = ProcessConfig {
+        keep_mask_alpha: config.keep_mask_alpha,
+        output_masks: config.output_masks,
+        suffixes: config.suffixes.clone(),
+        output_texture_name: PathBuf::from(&config.output_texture_name),
+        output_directory: output_directory.clone(),
+    };
 
-        combine_texture_sets(&inputs, &config)?;
+    combine_texture_sets(&inputs, &config)?;
 
-        // Open the destination directory when completed.
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new("explorer")
-                .arg(&output_directory)
-                .output();
-        };
+    // Open the destination directory when completed.
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(&output_directory)
+            .output();
+    };
 
-        Ok(())
-    }
+    Ok(())
 }
 
 fn collect_and_group_files_by_name<P: AsRef<Path>>(

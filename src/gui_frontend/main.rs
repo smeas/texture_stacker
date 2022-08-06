@@ -5,7 +5,7 @@ use eframe::{egui, Frame};
 use eframe::egui::{Align, Align2, Context, Id, Layout, RichText, Ui, Window};
 use nfd2::Response;
 
-use texture_stacker::TextureStacker;
+use texture_stacker::ConfigFile;
 
 fn main() {
     let mut window = MainWindow::new();
@@ -32,7 +32,6 @@ enum ProcessingState {
 
 struct MainWindow {
     config: texture_stacker::Config,
-    input_directory: String,
     processing_state: ProcessingState,
     process_thread: Option<thread::JoinHandle<Result<(), String>>>,
     //process_log: String,
@@ -44,7 +43,6 @@ impl MainWindow {
     pub fn new() -> Self {
         Self {
             config: Default::default(),
-            input_directory: String::new(),
 
             processing_state: ProcessingState::None,
             process_thread: None,
@@ -55,7 +53,15 @@ impl MainWindow {
         }
     }
 
-    pub fn init(&mut self) {}
+    pub fn init(&mut self) {
+        match texture_stacker::read_config_file() {
+            Ok(config_file) => {
+                self.config = config_file.into();
+                println!("Loaded config file.");
+            }
+            Err(_) => {}
+        }
+    }
 
     fn draw_suffix_list(&mut self, ui: &mut Ui) {
         let mut index_to_remove: Option<usize> = None;
@@ -87,7 +93,7 @@ impl MainWindow {
     }
 
     fn validate_input_fields(&mut self) -> bool {
-        return if !Path::new(&self.input_directory).is_dir() {
+        return if !Path::new(&self.config.input_directory).is_dir() {
             self.display_error("Invalid input directory.");
             false
         } else if
@@ -103,15 +109,13 @@ impl MainWindow {
 
     fn start_processing(&mut self) {
         let mut config = self.config.clone();
-        let input_directory = self.input_directory.clone();
 
         // Remove empty suffixes and duplicates.
         config.suffixes.retain(|suffix| !suffix.is_empty());
         config.suffixes = remove_duplicates(config.suffixes);
 
-        self.process_thread = Some(thread::spawn(|| {
-            let stacker = TextureStacker::new(config);
-            match stacker.run_on_directory(input_directory) {
+        self.process_thread = Some(thread::spawn(move || {
+            match texture_stacker::run(&config) {
                 Ok(_) => Ok(()),
                 Err(err) => Err(err.to_string()),
             }
@@ -121,7 +125,7 @@ impl MainWindow {
     fn draw_main_window_content(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Input Directory");
-            file_picker_field(ui, &mut self.input_directory);
+            file_picker_field(ui, &mut self.config.input_directory);
         });
 
         ui.horizontal(|ui| {
@@ -200,7 +204,6 @@ impl MainWindow {
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-
             let is_dialog_showing = self.is_showing_error || self.processing_state != ProcessingState::None;
             ui.add_enabled_ui(!is_dialog_showing, |ui| {
                 self.draw_main_window_content(ui)
@@ -216,6 +219,14 @@ impl eframe::App for MainWindow {
                 self.draw_error_window(ctx);
             }
         });
+    }
+
+    fn on_exit(&mut self, _gl: &eframe::glow::Context) {
+        // No point in handling errors here as the user will never be able to see them.
+        match texture_stacker::write_config_file(&ConfigFile::from(self.config.clone())) {
+            Ok(_) => println!("Wrote config file."),
+            Err(err) => println!("Error writing config file: {}", err),
+        }
     }
 }
 

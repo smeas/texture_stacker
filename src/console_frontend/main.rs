@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use texture_stacker::{Config, TextureStacker};
+use texture_stacker::Config;
 
 mod interop;
 
@@ -44,8 +44,8 @@ fn run() -> std::result::Result<(), Box<dyn Error>> {
     let keep_mask_alpha = get_keep_mask_alpha()?;
 
     // Load config file.
-    let mut config = match texture_stacker::load_config_file() {
-        Ok(config) => config,
+    let mut config: Config = match texture_stacker::read_config_file() {
+        Ok(config) => config.into(),
         Err(err) => {
             log_error!("Error loading config file \"{}\", using defaults.", err);
             Config::default()
@@ -62,10 +62,10 @@ fn run() -> std::result::Result<(), Box<dyn Error>> {
         exit_blocking(1);
     }
 
-    let stacker = TextureStacker::new(config);
+    config.input_directory = input_directory;
 
     let start_time = Instant::now();
-    stacker.run_on_directory(&input_directory)?;
+    texture_stacker::run(&config)?;
     println!("Finished in {} s", start_time.elapsed().as_secs_f32());
 
     Ok(())
