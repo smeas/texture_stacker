@@ -2,18 +2,24 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use eframe::{egui, Frame};
-use eframe::egui::{Align, Align2, Context, Id, Layout, ProgressBar, RichText, Ui, Window};
+use eframe::{egui, Frame, NativeOptions};
+use eframe::egui::{Align, Align2, Context, Direction, Id, Layout, ProgressBar, RichText, Ui, Vec2, Window};
 use nfd2::Response;
 
-use texture_stacker::ConfigFile;
+use texture_stacker::{Config, ConfigFile};
+use crate::egui::DroppedFile;
 
 fn main() {
     let mut window = MainWindow::new();
     window.init();
 
     // Show the window.
-    let options = eframe::NativeOptions::default();
+    let options = NativeOptions {
+        initial_window_size: Some(Vec2::new(460.0, 280.0)),
+        resizable: false,
+        ..NativeOptions::default()
+    };
+
     eframe::run_native(
         "Texture Stacker",
         options,
@@ -36,7 +42,7 @@ struct ProcessingState {
 }
 
 struct MainWindow {
-    config: texture_stacker::Config,
+    config: Config,
     processing_status: ProcessingStatus,
     process_thread: Option<thread::JoinHandle<Result<(), String>>>,
     processing_state: Arc<Mutex<ProcessingState>>,
@@ -61,12 +67,9 @@ impl MainWindow {
     }
 
     pub fn init(&mut self) {
-        match texture_stacker::read_config_file() {
-            Ok(config_file) => {
-                self.config = config_file.into();
-                println!("Loaded config file.");
-            }
-            Err(_) => {}
+        if let Ok(config_file) = texture_stacker::read_config_file() {
+            self.config = config_file.into();
+            println!("Loaded config file.");
         }
     }
 
@@ -133,6 +136,35 @@ impl MainWindow {
         }));
     }
 
+    /// Handles drag and drop and drawing help text on hover. Returns true if hovering, and drawing
+    /// the main window content should be skipped.
+    fn handle_drag_and_drop(&mut self, ui: &mut Ui) -> bool {
+        let is_hovering_files: bool = !ui.ctx().input().raw.hovered_files.is_empty();
+        let dropped_files: Vec<DroppedFile> = ui.ctx().input().raw.dropped_files.clone();
+
+        if !dropped_files.is_empty() {
+            if let Some(path) = &dropped_files[0].path {
+                let mut path = path.clone();
+                // If a file was dropped, we want take it's containing directory instead.
+                if path.is_file() {
+                    path.pop();
+                }
+
+                self.config.input_directory = path.to_string_lossy().to_string();
+            }
+        }
+
+        if is_hovering_files {
+            ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
+                ui.label(RichText::new("Drop Input Here").size(42.0));
+            });
+
+            return true
+        }
+
+        false
+    }
+
     fn draw_main_window_content(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Input Directory");
@@ -150,8 +182,13 @@ impl MainWindow {
         ui.label("Suffixes");
         self.draw_suffix_list(ui);
 
-        ui.add_space(12.0);
-        if ui.button(RichText::new("Start").size(24.0)).clicked() {
+        ui.add_space(5.0);
+        if ui.button("Reset Settings To Default").clicked() {
+            self.config = Config::default();
+        }
+
+        ui.separator();
+        if ui.button(RichText::new("Combine").size(24.0)).clicked() {
             if self.validate_input_fields() {
                 self.start_processing();
                 self.processing_status = ProcessingStatus::Processing;
@@ -186,7 +223,11 @@ impl MainWindow {
 
                 match result {
                     Ok(_) => {}
-                    Err(err) => self.display_error(&err),
+                    Err(err) => {
+                        // Hide the process dialog and show error.
+                        self.processing_status = ProcessingStatus::None;
+                        self.display_error(&err);
+                    },
                 }
             }
         }
@@ -194,7 +235,7 @@ impl MainWindow {
 
     fn draw_processing_window(&mut self, ctx: &Context) {
         let is_processing = self.processing_status == ProcessingStatus::Processing;
-        let title = if is_processing { "Processing" } else { "Completed" };
+        let title = if is_processing { "Combining..." } else { "Completed" };
         Window::new(title)
             .id(Id::new("processing_window")) // required because the title changes
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
@@ -204,7 +245,8 @@ impl MainWindow {
                 let progress = self.processing_state.lock().unwrap().progress;
 
                 ui.add(ProgressBar::new(progress)
-                    .show_percentage().animate(true));
+                    .show_percentage()
+                    .animate(self.processing_status == ProcessingStatus::Processing));
 
                 if !is_processing {
                     ui.with_layout(Layout::default().with_cross_align(Align::Center), |ui| {
@@ -221,6 +263,14 @@ impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let is_dialog_showing = self.is_showing_error || self.processing_status != ProcessingStatus::None;
+
+            // Handle drag & drop in main window.
+            if !is_dialog_showing {
+                if self.handle_drag_and_drop(ui) {
+                    return;
+                }
+            }
+
             ui.add_enabled_ui(!is_dialog_showing, |ui| {
                 self.draw_main_window_content(ui)
             });

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::Result;
 
-const DEFAULT_CONFIG_FILE_NAME: &str = "config.toml";
+const DEFAULT_CONFIG_FILE_NAME: &str = "texture_stacker.toml";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -26,7 +26,7 @@ impl Default for Config {
                 "_E".to_owned(),
                 "_M".to_owned(),
             ],
-            output_texture_name: "Output".to_owned(),
+            output_texture_name: "T_Combined".to_owned(),
             input_directory: String::new(),
             output_directory: None,
         }
