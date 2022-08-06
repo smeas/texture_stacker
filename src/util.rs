@@ -1,3 +1,16 @@
+use std::path::Path;
+
+pub fn suffix_from_filename(filename: &str) -> Option<&str> {
+    if let Some(stem) = Path::new(filename).file_stem() {
+        let stem = stem.to_str().unwrap();
+        if let Some(pos) = stem.rfind('_') {
+            return Some(&stem[pos..]);
+        }
+    }
+
+    None
+}
+
 macro_rules! log_info {
     ($fmt:literal) => {
         std::println!($fmt);

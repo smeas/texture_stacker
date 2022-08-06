@@ -11,6 +11,5 @@ suffixes = [
 # Options for debugging
 #
 
-#input_directory = "TEST2/"
 #output_texture_name = "T_CarPlayer"
 #output_masks = true

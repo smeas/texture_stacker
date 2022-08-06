@@ -1,5 +1,6 @@
 use crate::util::{log_error, log_info, log_warn};
 use crate::Result;
+use crate::config::Config;
 use png::{BitDepth, ColorType};
 use std::{fs::File, io::BufWriter, path::PathBuf};
 
@@ -7,15 +8,6 @@ use std::{fs::File, io::BufWriter, path::PathBuf};
 pub struct InputTextureSet {
     pub name: String,
     pub textures: Vec<Option<String>>,
-}
-
-#[derive(Debug)]
-pub struct Config {
-    pub keep_mask_alpha: bool,
-    pub suffixes: Vec<String>,
-    pub output_masks: bool,
-    pub output_directory: String,
-    pub output_texture_name: String,
 }
 
 pub struct RawImage {
@@ -186,7 +178,7 @@ fn create_mask_from_alpha_channel(image: &RawImage) -> Vec<bool> {
     pixel_mask
 }
 
-pub fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> Result<()> {
+pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> Result<()> {
     // Assumptions.
     for texture_set in input_sets {
         assert!(texture_set.textures.len() > 0);
@@ -199,7 +191,7 @@ pub fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> 
 
     // Compute masks for each texture set.
     for input_set in input_sets {
-        let file_name = input_set.textures[0].as_ref().unwrap();
+        let file_name = input_set.textures[0].as_ref().expect("the first texture of the set was not present");
         let image = read_image_from_file(&file_name)?;
         let image_format = &image.format;
         let image_size = (image_format.width, image_format.height);
@@ -258,7 +250,7 @@ pub fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> 
                 pixel_to_bytes(pixel, &format, &mut buffer[i * stride..]);
             }
 
-            let filename = format!("{}/mask{}.png", config.output_directory, i);
+            let filename = format!("{}/mask{}.png", config.output_directory.to_string_lossy(), i);
             write_image_to_file(
                 &filename,
                 &RawImage {
@@ -371,7 +363,7 @@ pub fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> 
             let mut output_file_path = PathBuf::new();
             output_file_path.push(&config.output_directory);
             // NOTE: If output_texture_name contains a '/' or '\', this could lead to unexpected results.
-            output_file_path.push(format!("{}{}", &config.output_texture_name, suffix));
+            output_file_path.push(format!("{}{}", &config.output_texture_name.to_string_lossy(), suffix));
             output_file_path.set_extension("png");
 
             let output_file = output_file_path.to_str().unwrap();
