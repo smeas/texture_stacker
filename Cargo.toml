@@ -9,7 +9,14 @@ edition = "2021"
 png = "0.17.5"
 serde = { version = "1.0.136", features = ["derive"] }
 toml = "0.5.9"
+# gui_frontend
+eframe = "0.18.0"
+nfd2 = "0.3.1"
 
 [[bin]]
 name = "texture_stacker"
 path = "src/console_frontend/main.rs"
+
+[[bin]]
+name = "texture_stacker_gui"
+path = "src/gui_frontend/main.rs"
