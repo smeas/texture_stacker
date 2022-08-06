@@ -1,7 +1,9 @@
-use crate::util::{log_error, log_info, log_warn};
-use crate::Result;
-use png::{BitDepth, ColorType};
 use std::{fs::File, io::BufWriter, path::PathBuf};
+
+use png::{BitDepth, ColorType};
+
+use crate::Result;
+use crate::util::{log_error, log_info, log_warn};
 
 #[derive(Debug)]
 pub(crate) struct InputTextureSet {
@@ -45,11 +47,9 @@ fn read_image_from_file(file_name: &str) -> Result<RawImage> {
     let bytes = &buffer[..info.buffer_size()];
 
     if reader.info().is_animated() {
-        log_error!(
+        return Err(format!(
             "The image '{}' is an animated PNG, which is not supported.",
-            file_name
-        );
-        panic!();
+            file_name).into());
     }
 
     Ok(RawImage {
@@ -206,29 +206,24 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
 
         // Need alpha channel for mask
         if image_format.color_type != ColorType::Rgba {
-            log_error!(
+            return Err(format!(
                 "The image '{}' needs to have an alpha channel in order for a mask to be computed.",
-                &file_name
-            );
-            panic!();
+                &file_name).into());
         }
 
         if image_size == (0, 0) {
-            log_error!("The image '{}' is zero sized.", &file_name);
-            panic!();
+            return Err(format!("The image '{}' is zero sized.", &file_name).into());
         }
 
         if working_res == (0, 0) {
             working_res = image_size;
         } else {
             if image_size != working_res {
-                log_error!(
+                return Err(format!(
                     "The image '{}' does not have the same resolution {:?} as the previous image(s) {:?}.",
                     &file_name,
                     image_size,
-                    working_res
-                );
-                panic!();
+                    working_res).into());
             }
         }
 
@@ -299,23 +294,19 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
                 let input_size = (format.width, format.height);
 
                 if input_size != output_size {
-                    log_error!(
+                    return Err(format!(
                         "The image '{}' does not have the same resolution {:?} as the previous image(s) {:?}.",
                         &texture_filename,
                         input_size,
-                        output_size
-                    );
-                    panic!();
+                        output_size).into());
                 }
 
                 if format.bit_depth != output_format.bit_depth {
-                    log_error!(
+                    return Err(format!(
                         "The image '{}' does not have the same bit-depth ({:?}) as the previous image(s) ({:?}).",
                         &texture_filename,
                         format.bit_depth,
-                        output_format.bit_depth,
-                    );
-                    panic!();
+                        output_format.bit_depth).into());
                 }
 
                 if format.color_type != output_format.color_type {
@@ -330,12 +321,10 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
                             }
                         }
                         _ => {
-                            log_error!(
+                            return Err(format!(
                                 "The image '{}' has an unsupported color type ({:?})",
                                 &texture_filename,
-                                format.color_type
-                            );
-                            panic!();
+                                format.color_type).into());
                         }
                     }
                 }
