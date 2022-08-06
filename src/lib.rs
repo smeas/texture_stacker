@@ -15,7 +15,7 @@ pub(crate) type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const DEFAULT_OUTPUT_DIRECTORY_NAME: &str = "Combined";
 
-pub fn run(config: &Config) -> Result<()> {
+pub fn run(config: &Config, progress_handler: Option<Box<dyn Fn(f32)>>) -> Result<()> {
     if config.suffixes.is_empty() {
         return Err("No suffixes specified.".into());
     }
@@ -65,6 +65,7 @@ pub fn run(config: &Config) -> Result<()> {
         suffixes: config.suffixes.clone(),
         output_texture_name: PathBuf::from(&config.output_texture_name),
         output_directory: output_directory.clone(),
+        progress_handler,
     };
 
     combine_texture_sets(&inputs, &config)?;

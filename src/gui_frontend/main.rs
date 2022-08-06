@@ -1,8 +1,9 @@
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::{egui, Frame};
-use eframe::egui::{Align, Align2, Context, Id, Layout, RichText, Ui, Window};
+use eframe::egui::{Align, Align2, Context, Id, Layout, ProgressBar, RichText, Ui, Window};
 use nfd2::Response;
 
 use texture_stacker::ConfigFile;
@@ -24,16 +25,21 @@ fn main() {
 }
 
 #[derive(Eq, PartialEq)]
-enum ProcessingState {
+enum ProcessingStatus {
     None,
     Processing,
     Completed,
 }
 
+struct ProcessingState {
+    progress: f32,
+}
+
 struct MainWindow {
     config: texture_stacker::Config,
-    processing_state: ProcessingState,
+    processing_status: ProcessingStatus,
     process_thread: Option<thread::JoinHandle<Result<(), String>>>,
+    processing_state: Arc<Mutex<ProcessingState>>,
     //process_log: String,
     is_showing_error: bool,
     error_message: String,
@@ -44,8 +50,9 @@ impl MainWindow {
         Self {
             config: Default::default(),
 
-            processing_state: ProcessingState::None,
+            processing_status: ProcessingStatus::None,
             process_thread: None,
+            processing_state: Arc::new(Mutex::new(ProcessingState { progress: 0.0 })),
             //process_log: String::new(),
 
             is_showing_error: false,
@@ -109,13 +116,17 @@ impl MainWindow {
 
     fn start_processing(&mut self) {
         let mut config = self.config.clone();
+        let progress_mutex = self.processing_state.clone();
 
         // Remove empty suffixes and duplicates.
         config.suffixes.retain(|suffix| !suffix.is_empty());
         config.suffixes = remove_duplicates(config.suffixes);
 
         self.process_thread = Some(thread::spawn(move || {
-            match texture_stacker::run(&config) {
+            match texture_stacker::run(&config, Some(Box::new(move |progress: f32| {
+                let mut state = progress_mutex.lock().unwrap();
+                state.progress = progress;
+            }))) {
                 Ok(_) => Ok(()),
                 Err(err) => Err(err.to_string()),
             }
@@ -143,7 +154,7 @@ impl MainWindow {
         if ui.button(RichText::new("Start").size(24.0)).clicked() {
             if self.validate_input_fields() {
                 self.start_processing();
-                self.processing_state = ProcessingState::Processing;
+                self.processing_status = ProcessingStatus::Processing;
             }
         }
     }
@@ -164,10 +175,10 @@ impl MainWindow {
     }
 
     fn update_processing_state(&mut self) {
-        if self.processing_state == ProcessingState::Processing {
+        if self.processing_status == ProcessingStatus::Processing {
             // See if the thread has finished.
             if self.process_thread.as_ref().unwrap().is_finished() {
-                self.processing_state = ProcessingState::Completed;
+                self.processing_status = ProcessingStatus::Completed;
 
                 // Get the result from the thread handle.
                 let handle = self.process_thread.take().unwrap();
@@ -182,7 +193,7 @@ impl MainWindow {
     }
 
     fn draw_processing_window(&mut self, ctx: &Context) {
-        let is_processing = self.processing_state == ProcessingState::Processing;
+        let is_processing = self.processing_status == ProcessingStatus::Processing;
         let title = if is_processing { "Processing" } else { "Completed" };
         Window::new(title)
             .id(Id::new("processing_window")) // required because the title changes
@@ -190,10 +201,15 @@ impl MainWindow {
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
+                let progress = self.processing_state.lock().unwrap().progress;
+
+                ui.add(ProgressBar::new(progress)
+                    .show_percentage().animate(true));
+
                 if !is_processing {
                     ui.with_layout(Layout::default().with_cross_align(Align::Center), |ui| {
                         if ui.button("Ok").clicked() {
-                            self.processing_state = ProcessingState::None;
+                            self.processing_status = ProcessingStatus::None;
                         }
                     });
                 }
@@ -204,13 +220,13 @@ impl MainWindow {
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let is_dialog_showing = self.is_showing_error || self.processing_state != ProcessingState::None;
+            let is_dialog_showing = self.is_showing_error || self.processing_status != ProcessingStatus::None;
             ui.add_enabled_ui(!is_dialog_showing, |ui| {
                 self.draw_main_window_content(ui)
             });
 
             // Dialogs
-            if self.processing_state != ProcessingState::None {
+            if self.processing_status != ProcessingStatus::None {
                 self.update_processing_state();
                 self.draw_processing_window(ctx);
             }

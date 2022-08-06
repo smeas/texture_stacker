@@ -65,7 +65,7 @@ fn run() -> std::result::Result<(), Box<dyn Error>> {
     config.input_directory = input_directory;
 
     let start_time = Instant::now();
-    texture_stacker::run(&config)?;
+    texture_stacker::run(&config, None)?;
     println!("Finished in {} s", start_time.elapsed().as_secs_f32());
 
     Ok(())

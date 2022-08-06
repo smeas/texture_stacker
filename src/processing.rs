@@ -11,13 +11,13 @@ pub(crate) struct InputTextureSet {
     pub textures: Vec<Option<String>>,
 }
 
-#[derive(Debug)]
 pub(crate) struct ProcessConfig {
     pub keep_mask_alpha: bool,
     pub suffixes: Vec<String>,
     pub output_masks: bool,
     pub output_directory: PathBuf,
     pub output_texture_name: PathBuf,
+    pub progress_handler: Option<Box<dyn Fn(f32)>>,
 }
 
 pub(crate) struct RawImage {
@@ -193,6 +193,15 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
         assert!(texture_set.textures[0].is_some());
     }
 
+    let max_progress = (input_sets.len() * config.suffixes.len() + input_sets.len() + 1) as f32;
+    let mut progress = 0f32;
+    let mut increment_progress = || {
+        progress += 1.0;
+        if let Some(progress_handler) = &config.progress_handler {
+            progress_handler((progress / max_progress).clamp(0.0, 1.0));
+        }
+    };
+
     // Pixel mask for each texture set.
     let mut set_masks = vec![];
     let mut working_res = (0u32, 0u32);
@@ -229,6 +238,8 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
 
         let mask = create_mask_from_alpha_channel(&image);
         set_masks.push(mask);
+
+        increment_progress();
     }
 
     if config.output_masks {
@@ -354,6 +365,8 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
                 let mask = &set_masks[set_index];
                 copy_image_masked(&image, output_image.as_mut().unwrap(), &mask);
             }
+
+            increment_progress();
         }
 
         if let Some(image) = &output_image {
@@ -368,6 +381,8 @@ pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Proc
             write_image_to_file(output_file, &image)?;
         }
     }
+
+    increment_progress();
 
     Ok(())
 }
