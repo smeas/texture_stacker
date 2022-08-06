@@ -19,15 +19,6 @@ pub(crate) fn load_config_file() -> Result<ConfigFile> {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct Config {
-    pub keep_mask_alpha: bool,
-    pub suffixes: Vec<String>,
-    pub output_masks: bool,
-    pub output_directory: PathBuf,
-    pub output_texture_name: PathBuf,
-}
-
 #[derive(Debug, Deserialize)]
 pub(crate) struct ConfigFile {
     #[serde(default)]

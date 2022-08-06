@@ -1,16 +1,24 @@
 use crate::util::{log_error, log_info, log_warn};
 use crate::Result;
-use crate::config::Config;
 use png::{BitDepth, ColorType};
 use std::{fs::File, io::BufWriter, path::PathBuf};
 
 #[derive(Debug)]
-pub struct InputTextureSet {
+pub(crate) struct InputTextureSet {
     pub name: String,
     pub textures: Vec<Option<String>>,
 }
 
-pub struct RawImage {
+#[derive(Debug)]
+pub(crate) struct ProcessConfig {
+    pub keep_mask_alpha: bool,
+    pub suffixes: Vec<String>,
+    pub output_masks: bool,
+    pub output_directory: PathBuf,
+    pub output_texture_name: PathBuf,
+}
+
+pub(crate) struct RawImage {
     data: Vec<u8>,
     format: ImageFormat,
 }
@@ -178,7 +186,7 @@ fn create_mask_from_alpha_channel(image: &RawImage) -> Vec<bool> {
     pixel_mask
 }
 
-pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &Config) -> Result<()> {
+pub(crate) fn combine_texture_sets(input_sets: &[InputTextureSet], config: &ProcessConfig) -> Result<()> {
     // Assumptions.
     for texture_set in input_sets {
         assert!(texture_set.textures.len() > 0);

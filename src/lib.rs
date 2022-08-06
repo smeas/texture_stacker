@@ -3,8 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::Config;
-use crate::processing::{combine_texture_sets, InputTextureSet};
+use crate::processing::{combine_texture_sets, InputTextureSet, ProcessConfig};
 use crate::util::{log_warn, suffix_from_filename};
 
 mod processing;
@@ -18,15 +17,19 @@ const COMBINED_DIRECTORY_NAME: &str = "Combined";
 /// Main API
 pub struct TextureStacker {
     // Options
+    config: Config,
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
     pub keep_mask_alpha: bool,
     pub output_masks: bool,
     pub suffixes: Vec<String>,
     pub output_texture_name: String,
 }
 
-impl TextureStacker {
-    /// Initialize API and load config file.
-    pub fn new() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         Self {
             keep_mask_alpha: false,
             output_masks: false,
@@ -39,20 +42,40 @@ impl TextureStacker {
             output_texture_name: "Output".to_owned(),
         }
     }
+}
+
+pub fn load_config_file() -> Result<Config> {
+    let file = config::load_config_file()?;
+    let mut config = Config::default();
+    config.output_masks = file.output_masks;
+    config.suffixes = file.suffixes;
+    if let Some(name) = file.output_texture_name {
+        config.output_texture_name = name;
+    }
+
+    Ok(config)
+}
+
+impl TextureStacker {
+    /// Initialize API and load config file.
+    pub fn new(config: Config) -> Self {
+        Self { config }
+    }
 
     pub fn load_config_file(&mut self) -> Result<()> {
         let conf = config::load_config_file()?;
-        self.output_masks = conf.output_masks;
-        self.suffixes = conf.suffixes;
+        self.config.output_masks = conf.output_masks;
+        self.config.suffixes = conf.suffixes;
         if let Some(name) = conf.output_texture_name {
-            self.output_texture_name = name;
+            self.config.output_texture_name = name;
         }
 
         Ok(())
     }
 
-    pub fn run_on_directory(&mut self, input_directory: impl AsRef<Path>) -> Result<()> {
-        if self.suffixes.is_empty() {
+    pub fn run_on_directory(&self, input_directory: impl AsRef<Path>) -> Result<()> {
+        let config = &self.config;
+        if config.suffixes.is_empty() {
             return Err("No suffixes specified.".into());
         }
 
@@ -72,7 +95,7 @@ impl TextureStacker {
 
         // Gather input sets from the input directory.
         let mut inputs =
-            gather_texture_sets_from_directory(&input_directory, &self.suffixes)?;
+            gather_texture_sets_from_directory(&input_directory, &config.suffixes)?;
 
         // Remove invalid texture sets from the list.
         inputs.retain(|set| {
@@ -82,18 +105,18 @@ impl TextureStacker {
                 log_warn!(
                 "Unable to compute mask for texture set '{}' because the first texture type '{}' is missing. This texture set will be skipped.",
                 set.name,
-                &self.suffixes[0]);
+                &config.suffixes[0]);
             }
 
             valid
         });
 
         // Process all input files.
-        let config = Config {
-            keep_mask_alpha: self.keep_mask_alpha,
-            output_masks: self.output_masks,
-            suffixes: self.suffixes.clone(),
-            output_texture_name: PathBuf::from(&self.output_texture_name),
+        let config = ProcessConfig {
+            keep_mask_alpha: config.keep_mask_alpha,
+            output_masks: config.output_masks,
+            suffixes: config.suffixes.clone(),
+            output_texture_name: PathBuf::from(&config.output_texture_name),
             output_directory: output_directory.clone(),
         };
 

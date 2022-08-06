@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use texture_stacker::TextureStacker;
+use texture_stacker::{Config, TextureStacker};
 
 mod interop;
 
@@ -43,22 +43,26 @@ fn run() -> std::result::Result<(), Box<dyn Error>> {
     let output_texture_name = get_output_texture_name()?;
     let keep_mask_alpha = get_keep_mask_alpha()?;
 
-    let mut stacker = TextureStacker::new();
-
     // Load config file.
-    if let Err(err) = stacker.load_config_file() {
-        log_error!("Error loading config file \"{}\", using defaults.", err);
-    }
+    let mut config = match texture_stacker::load_config_file() {
+        Ok(config) => config,
+        Err(err) => {
+            log_error!("Error loading config file \"{}\", using defaults.", err);
+            Config::default()
+        }
+    };
 
     // Apply options from user.
-    stacker.output_texture_name = output_texture_name;
-    stacker.keep_mask_alpha = keep_mask_alpha;
+    config.output_texture_name = output_texture_name;
+    config.keep_mask_alpha = keep_mask_alpha;
 
     // Validate settings.
-    if stacker.suffixes.is_empty() {
+    if config.suffixes.is_empty() {
         log_error!("No suffixes specified in config.");
         exit_blocking(1);
     }
+
+    let stacker = TextureStacker::new(config);
 
     let start_time = Instant::now();
     stacker.run_on_directory(&input_directory)?;
