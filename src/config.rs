@@ -110,7 +110,6 @@ fn get_default_config_path() -> Result<PathBuf> {
     let mut path = PathBuf::new();
     path.push(env::current_exe()?);
     path.pop();
-    path.push("..");
     path.push(DEFAULT_CONFIG_FILE_NAME);
     Ok(path)
 }

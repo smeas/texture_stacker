@@ -1,13 +1,14 @@
+#![windows_subsystem = "windows"]
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::{egui, Frame, NativeOptions};
-use eframe::egui::{Align, Align2, Context, Direction, Id, Layout, ProgressBar, RichText, Ui, Vec2, Window};
+use eframe::egui::{Align, Align2, Context, Direction, Id, Layout, ProgressBar, RichText, Ui, Vec2, Window, DroppedFile};
 use nfd2::Response;
 
 use texture_stacker::{Config, ConfigFile};
-use crate::egui::DroppedFile;
 
 fn main() {
     let mut window = MainWindow::new();
@@ -16,7 +17,7 @@ fn main() {
     // Show the window.
     let options = NativeOptions {
         initial_window_size: Some(Vec2::new(460.0, 280.0)),
-        resizable: false,
+        resizable: true,
         ..NativeOptions::default()
     };
 
@@ -88,7 +89,7 @@ impl MainWindow {
             });
         }
 
-        if ui.button("Add Suffix").clicked() {
+        if ui.button("Add Texture Type").clicked() {
             self.config.suffixes.push("_D".to_owned());
         }
 
@@ -156,7 +157,7 @@ impl MainWindow {
 
         if is_hovering_files {
             ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
-                ui.label(RichText::new("Drop Input Here").size(42.0));
+                ui.label(RichText::new("Drop Folder Here").size(42.0));
             });
 
             return true
@@ -176,10 +177,11 @@ impl MainWindow {
             ui.text_edit_singleline(&mut self.config.output_texture_name);
         });
 
-        ui.checkbox(&mut self.config.keep_mask_alpha, "Keep Mask Alpha");
+        ui.checkbox(&mut self.config.keep_mask_alpha, "Preserve Alpha Channel")
+            .on_hover_text("Should the alpha channel be kept in the output texture?\nCheck this if your material contais transparency.");
 
 
-        ui.label("Suffixes");
+        ui.label("Texture Types (filename suffixes)");
         self.draw_suffix_list(ui);
 
         ui.add_space(5.0);

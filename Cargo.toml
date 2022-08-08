@@ -2,6 +2,7 @@
 name = "texture_stacker"
 version = "0.1.0"
 edition = "2021"
+default-run = "texture_stacker"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,10 +14,13 @@ toml = "0.5.9"
 eframe = "0.18.0"
 nfd2 = "0.3.1"
 
+#[profile.release]
+#lto = true
+
 [[bin]]
-name = "texture_stacker"
+name = "texture_stacker_console"
 path = "src/console_frontend/main.rs"
 
 [[bin]]
-name = "texture_stacker_gui"
+name = "texture_stacker"
 path = "src/gui_frontend/main.rs"
